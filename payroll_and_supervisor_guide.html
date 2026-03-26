@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HRMatrix — Payroll & Supervisor Module Guide</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; color: #1a1a2e; background: #f8f9fb; line-height: 1.7; }
+  .page { max-width: 800px; margin: 0 auto; background: #fff; padding: 48px 56px; min-height: 100vh; }
+  @media print { body { background: #fff; } .page { padding: 24px; } .no-print { display: none !important; } }
+  
+  h1 { font-size: 1.8rem; font-weight: 700; margin-bottom: 4px; color: #0f172a; }
+  .subtitle { font-size: .88rem; color: #64748b; margin-bottom: 32px; }
+  h2 { font-size: 1.25rem; font-weight: 700; color: #0f172a; margin-top: 36px; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 2px solid #e2e8f0; }
+  h3 { font-size: 1rem; font-weight: 600; color: #334155; margin-top: 24px; margin-bottom: 8px; }
+  h4 { font-size: .88rem; font-weight: 600; color: #475569; margin-top: 16px; margin-bottom: 6px; }
+  p { margin-bottom: 10px; font-size: .88rem; color: #334155; }
+  
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: .82rem; }
+  th { background: #f1f5f9; color: #475569; font-weight: 600; text-align: left; padding: 8px 12px; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 2px solid #e2e8f0; }
+  td { padding: 8px 12px; border-bottom: 1px solid #f1f5f9; color: #334155; }
+  tr:hover { background: #fafbfc; }
+  
+  .flow-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 20px; margin: 12px 0 20px; font-family: 'Courier New', monospace; font-size: .82rem; color: #475569; line-height: 1.8; white-space: pre-wrap; }
+  
+  ol, ul { margin: 8px 0 16px 20px; font-size: .85rem; }
+  li { margin-bottom: 4px; color: #334155; }
+  li strong { color: #0f172a; }
+  
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: .68rem; font-weight: 600; letter-spacing: .02em; }
+  .badge-draft { background: #f1f5f9; color: #64748b; }
+  .badge-processing { background: #fef3c7; color: #92400e; }
+  .badge-review { background: #dbeafe; color: #1e40af; }
+  .badge-approved { background: #d1fae5; color: #065f46; }
+  .badge-paid { background: #dcfce7; color: #166534; }
+  
+  .status-flow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+  .status-flow .arrow { color: #94a3b8; font-size: 1.1rem; }
+  
+  .section-divider { border: none; border-top: 1px solid #e2e8f0; margin: 32px 0; }
+  
+  .dl-bar { position: sticky; top: 0; background: #0f172a; color: #fff; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; z-index: 10; }
+  .dl-bar span { font-size: .82rem; font-weight: 500; }
+  .dl-btn { background: #3b82f6; color: #fff; border: none; padding: 8px 20px; border-radius: 6px; font-size: .78rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .dl-btn:hover { background: #2563eb; }
+  
+  .toc { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 20px; margin-bottom: 28px; }
+  .toc-title { font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; margin-bottom: 8px; }
+  .toc a { display: block; font-size: .82rem; color: #3b82f6; text-decoration: none; padding: 3px 0; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div class="dl-bar no-print">
+  <span>HRMatrix — Payroll & Supervisor Guide</span>
+  <button class="dl-btn" onclick="window.print()">📄 Save as PDF</button>
+</div>
+
+<div class="page">
+  <h1>HRMatrix — Payroll & Supervisor Module Guide</h1>
+  <p class="subtitle">System documentation for the Payroll Officer and Supervisor roles · v3.0 · March 2026</p>
+
+  <div class="toc">
+    <div class="toc-title">Table of Contents</div>
+    <a href="#creds">1. Login Credentials</a>
+    <a href="#payroll">2. Payroll Officer Module</a>
+    <a href="#payroll-steps">3. How Payroll Works (Step by Step)</a>
+    <a href="#formulas">4. Key Payroll Formulas</a>
+    <a href="#supervisor">5. Supervisor Module</a>
+    <a href="#sup-functions">6. How the Supervisor Works</a>
+    <a href="#connection">7. How Payroll & Supervisor Connect</a>
+    <a href="#tables">8. Database Tables Reference</a>
+  </div>
+
+  <!-- Credentials -->
+  <h2 id="creds">1. Login Credentials</h2>
+  <table>
+    <thead><tr><th>Role</th><th>Email</th><th>Password</th></tr></thead>
+    <tbody>
+      <tr><td>Admin</td><td>admin@hrmatrix.com</td><td>Admin@1234</td></tr>
+      <tr><td>HR Manager</td><td>manager@hrmatrix.com</td><td>Demo@1234</td></tr>
+      <tr><td><strong>Payroll Officer</strong></td><td>pay@hrmatrix.com</td><td>Demo@1234</td></tr>
+      <tr><td><strong>Supervisor</strong></td><td>super@hrmatrix.com</td><td>Demo@1234</td></tr>
+      <tr><td>Employee</td><td>emp1@hrmatrix.com</td><td>Demo@1234</td></tr>
+    </tbody>
+  </table>
+
+  <hr class="section-divider">
+
+  <!-- Payroll Officer -->
+  <h2 id="payroll">2. Payroll Officer Module</h2>
+  <p><strong>User:</strong> Jose Reyes · Accounting Department</p>
+
+  <h3>Sidebar Navigation</h3>
+  <table>
+    <thead><tr><th>Section</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Pay Periods</strong></td><td>Create and manage payroll cycles</td></tr>
+      <tr><td><strong>Payroll Records</strong></td><td>View per-employee breakdown for a selected period</td></tr>
+      <tr><td><strong>Summary</strong></td><td>Overview of all periods and their statuses with totals</td></tr>
+      <tr><td><strong>Notifications</strong></td><td>View system-wide announcements</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="payroll-steps">3. How Payroll Works (Step by Step)</h2>
+
+  <h3>Step 1: Create a Pay Period</h3>
+  <ol>
+    <li>Click <strong>"+ New Period"</strong> (top-right corner)</li>
+    <li>Fill in: Period Name (e.g. "March 2026 – 1st Half"), Start Date, End Date, Pay Date</li>
+    <li>Click <strong>Create Period</strong> → status starts as <span class="badge badge-draft">Draft</span></li>
+  </ol>
+
+  <h3>Step 2: Generate Payroll</h3>
+  <ol>
+    <li>On a <span class="badge badge-draft">Draft</span> period, click <strong>Generate</strong></li>
+    <li>The system automatically:
+      <ul>
+        <li>Fetches all active employees and their basic salary</li>
+        <li>Queries <code>attendance_records</code> for the date range → calculates <strong>overtime</strong> (hours worked beyond 8hrs/day × hourly rate × 1.25)</li>
+        <li>Counts <strong>absent</strong> days → deducts <code>absent_days × daily_rate</code></li>
+        <li>Queries approved <code>leave_requests</code> → cross-checks <code>leave_balances</code> → deducts <strong>unpaid leave</strong> if balance is exceeded</li>
+        <li>Computes government contributions using <strong>2025 Philippine tables</strong></li>
+        <li>Calculates <strong>Net Pay</strong> = Gross – SSS – PhilHealth – PagIBIG – Tax – other deductions</li>
+      </ul>
+    </li>
+    <li>Period status changes to <span class="badge badge-processing">Processing</span></li>
+  </ol>
+
+  <h3>Step 3: Review & Edit</h3>
+  <ul>
+    <li>Navigate to <strong>Payroll Records</strong> to see per-employee breakdown</li>
+    <li>Click <strong>Edit</strong> on any record to manually adjust amounts if needed</li>
+    <li>Click <strong>🖨️</strong> to print a formatted payslip for any employee</li>
+  </ul>
+
+  <h3>Step 4: Submit for Approval</h3>
+  <ul>
+    <li>On a <span class="badge badge-processing">Processing</span> period, click <strong>Submit for Review</strong></li>
+    <li>Status changes to <span class="badge badge-review">Pending Approval</span></li>
+    <li>The Admin reviews and approves from their dashboard</li>
+  </ul>
+
+  <h3>Step 5: Mark as Paid</h3>
+  <ul>
+    <li>After Admin approves → status becomes <span class="badge badge-approved">Approved</span></li>
+    <li>Click <strong>Mark Paid</strong> → final status <span class="badge badge-paid">Paid</span></li>
+  </ul>
+
+  <h3>Payroll Status Flow</h3>
+  <div class="status-flow">
+    <span class="badge badge-draft">Draft</span><span class="arrow">→</span>
+    <span class="badge badge-processing">Processing</span><span class="arrow">→</span>
+    <span class="badge badge-review">Pending Approval</span><span class="arrow">→</span>
+    <span class="badge badge-approved">Approved</span><span class="arrow">→</span>
+    <span class="badge badge-paid">Paid</span>
+  </div>
+  <p style="font-size:.78rem; color:#64748b;">If Admin returns it: <span class="badge badge-review">Pending Approval</span> → <span class="badge badge-processing">Processing</span> (back to Payroll Officer for revision)</p>
+
+  <h3>Government Contributions (2025 Philippine Tables)</h3>
+  <table>
+    <thead><tr><th>Contribution</th><th>Formula</th></tr></thead>
+    <tbody>
+      <tr><td><strong>SSS</strong></td><td>Bracket-based: ₱180 (salary ₱4,250) up to ₱1,350 (salary ₱30,000+)</td></tr>
+      <tr><td><strong>PhilHealth</strong></td><td>5% of monthly salary ÷ 2 (employee pays half)</td></tr>
+      <tr><td><strong>Pag-IBIG</strong></td><td>2% of salary, max ₱200</td></tr>
+      <tr><td><strong>Withholding Tax</strong></td><td>BIR TRAIN Law brackets: 0% (≤₱20,833) up to 35% (₱666,667+)</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="formulas">4. Key Payroll Formulas</h2>
+  <table>
+    <thead><tr><th>Item</th><th>Formula</th></tr></thead>
+    <tbody>
+      <tr><td>Daily Rate</td><td><code>basic_salary ÷ 22</code></td></tr>
+      <tr><td>Hourly Rate</td><td><code>daily_rate ÷ 8</code></td></tr>
+      <tr><td>Overtime Pay</td><td><code>OT_hours × hourly_rate × 1.25</code></td></tr>
+      <tr><td>Absence Deduction</td><td><code>absent_days × daily_rate</code></td></tr>
+      <tr><td>Unpaid Leave</td><td><code>excess_leave_days × daily_rate</code></td></tr>
+      <tr><td>Gross Pay</td><td><code>basic_salary + overtime_pay</code></td></tr>
+      <tr><td>Net Pay</td><td><code>gross – SSS – PhilHealth – PagIBIG – tax – other_deductions</code></td></tr>
+    </tbody>
+  </table>
+
+  <hr class="section-divider">
+
+  <!-- Supervisor -->
+  <h2 id="supervisor">5. Supervisor Module</h2>
+  <p><strong>User:</strong> Lisa Tan</p>
+
+  <h3>Sidebar Navigation</h3>
+  <table>
+    <thead><tr><th>Section</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Overview</strong></td><td>Stats dashboard + pending leave approvals + team quick view</td></tr>
+      <tr><td><strong>My Team</strong></td><td>Full list of employees under this supervisor</td></tr>
+      <tr><td><strong>Leave Requests</strong></td><td>All leave requests from team members</td></tr>
+      <tr><td><strong>Attendance</strong></td><td>Team attendance log + manual attendance logging</td></tr>
+      <tr><td><strong>My Info</strong></td><td>Self-service (own profile, attendance, leaves, payslips)</td></tr>
+      <tr><td><strong>Notifications</strong></td><td>View system-wide announcements</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="sup-functions">6. How the Supervisor Works</h2>
+
+  <h3>Team Assignment</h3>
+  <ul>
+    <li>Employees are assigned to a supervisor via the <code>supervisor_id</code> field in the <code>employees</code> table</li>
+    <li>Only employees whose <code>supervisor_id</code> matches the supervisor's employee record appear as team members</li>
+    <li>The Admin or HR Manager assigns employees to supervisors</li>
+  </ul>
+
+  <h3>Leave Approval Flow</h3>
+  <ol>
+    <li>Employee files a leave request → status: <span class="badge badge-processing">Pending</span></li>
+    <li>Supervisor sees it in <strong>Overview</strong> → clicks <strong>Review</strong></li>
+    <li>Supervisor can add notes, then:
+      <ul>
+        <li><strong>Endorse to HR</strong> → status becomes <code>supervisor_approved</code></li>
+        <li><strong>Reject</strong> → status becomes <code>rejected</code></li>
+      </ul>
+    </li>
+    <li>HR Manager reviews endorsed requests and gives final approval</li>
+  </ol>
+  <div class="flow-box">Employee files leave (pending)
+       ↓
+Supervisor endorses (supervisor_approved) or rejects
+       ↓
+HR Manager/Admin gives final approval (approved) or rejects</div>
+
+  <h3>Logging Attendance</h3>
+  <ol>
+    <li>Click <strong>📋 Log Attendance</strong> (top bar) or go to <strong>Attendance → + Log</strong></li>
+    <li>Select employee from team, set date, time in, time out, status (present/absent/late/half day)</li>
+    <li>Click <strong>Save Record</strong> → inserted into <code>attendance_records</code> table</li>
+    <li>This data is used by Payroll when generating payroll (overtime, absence deductions)</li>
+  </ol>
+
+  <h3>Self-Service (My Info)</h3>
+  <table>
+    <thead><tr><th>Feature</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><strong>My Profile</strong></td><td>Name, Employee ID, Department, Position</td></tr>
+      <tr><td><strong>My Attendance</strong></td><td>Own time-in/time-out records</td></tr>
+      <tr><td><strong>My Leave Requests</strong></td><td>View own leave status + file new leave</td></tr>
+      <tr><td><strong>My Payslips</strong></td><td>Gross, deductions, net pay per period</td></tr>
+    </tbody>
+  </table>
+
+  <hr class="section-divider">
+
+  <h2 id="connection">7. How Payroll & Supervisor Connect</h2>
+  <div class="flow-box">Supervisor logs attendance → attendance_records table
+                                    ↓
+Payroll Officer generates payroll → reads attendance for OT + absences
+                                    ↓
+Payroll records net pay per employee → Employee sees payslip
+                                    ↓
+Supervisor can also view own payslip in My Info section</div>
+
+  <table>
+    <thead><tr><th>Supervisor Action</th><th>Payroll Impact</th></tr></thead>
+    <tbody>
+      <tr><td>Logs employee as <strong>present</strong> with overtime hours</td><td>Overtime pay calculated automatically</td></tr>
+      <tr><td>Logs employee as <strong>absent</strong></td><td>Absence deduction applied</td></tr>
+      <tr><td>Endorses leave request → HR approves</td><td>Leave days checked against balance; unpaid leave deducted if exceeded</td></tr>
+    </tbody>
+  </table>
+
+  <hr class="section-divider">
+
+  <h2 id="tables">8. Database Tables Reference</h2>
+  <table>
+    <thead><tr><th>Table</th><th>Payroll Officer</th><th>Supervisor</th></tr></thead>
+    <tbody>
+      <tr><td><code>employees</code></td><td>Read (salary, active status)</td><td>Read (team by supervisor_id)</td></tr>
+      <tr><td><code>attendance_records</code></td><td>Read (for OT & absences)</td><td>Read/Write (log attendance)</td></tr>
+      <tr><td><code>leave_requests</code></td><td>Read (for unpaid leave calc)</td><td>Read/Write (endorse/reject)</td></tr>
+      <tr><td><code>leave_balances</code></td><td>Read (for balance check)</td><td>—</td></tr>
+      <tr><td><code>payroll_periods</code></td><td>Read/Write (create, submit, mark paid)</td><td>—</td></tr>
+      <tr><td><code>payroll_records</code></td><td>Read/Write (generate, edit)</td><td>Read (own payslips)</td></tr>
+      <tr><td><code>announcements</code></td><td>Read (notifications)</td><td>Read (notifications)</td></tr>
+    </tbody>
+  </table>
+
+  <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center; color: #94a3b8; font-size: .72rem;">
+    HRMatrix System Documentation · Generated March 2026 · v3.0
+  </div>
+</div>
+
+</body>
+</html>
