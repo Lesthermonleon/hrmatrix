@@ -215,6 +215,32 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
             </div>
           )}
 
+          <div className="adm-section-title">Quick Actions</div>
+          <div className="adm-quick-grid" style={{ marginBottom: 24 }}>
+            {[
+              { icon: '🕒', title: 'Attendance', desc: 'View your time logs', section: 'attendance' },
+              { icon: '📋', title: 'Leave Requests', desc: 'Check leave status', section: 'leaves' },
+              { icon: '📄', title: 'Payslips', desc: 'Review your pay slips', section: 'payslips' },
+              { icon: '👤', title: 'My Profile', desc: 'Update personal details', section: 'profile' },
+              { icon: '🔔', title: 'Notifications', desc: 'Read company notices', section: 'notifications' },
+            ].map(action => (
+              <div
+                key={action.section}
+                className="adm-action-tile"
+                onClick={() => onNavigate(action.section)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onNavigate(action.section) }}
+                role="button"
+                tabIndex={0}
+              >
+                <div className="adm-action-icon">{action.icon}</div>
+                <div>
+                  <div className="adm-action-title">{action.title}</div>
+                  <div className="adm-action-desc">{action.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
           <div className="stat-grid" style={{ marginBottom: 24 }}>
             {[
               { label: 'DAYS WORKED', value: presentDays, sub: `${monthName} ${year}` },

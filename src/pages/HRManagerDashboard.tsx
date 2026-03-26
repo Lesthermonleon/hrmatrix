@@ -169,6 +169,33 @@ export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
               </div>
             ))}
           </div>
+
+          <div className="adm-section-title">Quick Actions</div>
+          <div className="adm-quick-grid" style={{ marginBottom: 24 }}>
+            {[
+              { icon: '👥', title: 'Employees', desc: 'Manage employee records', section: 'employees' },
+              { icon: '📅', title: 'Leaves', desc: 'Process leave requests', section: 'leaves' },
+              { icon: '📋', title: 'Attendance', desc: 'Review time logs', section: 'attendance' },
+              { icon: '⚖️', title: 'Leave Balances', desc: 'Adjust balance tracking', section: 'balances' },
+              { icon: '🔔', title: 'Announce', desc: 'Publish company alerts', section: 'notifications' },
+            ].map(action => (
+              <div
+                key={action.section}
+                className="adm-action-tile"
+                onClick={() => onNavigate(action.section)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onNavigate(action.section) }}
+                role="button"
+                tabIndex={0}
+              >
+                <div className="adm-action-icon">{action.icon}</div>
+                <div>
+                  <div className="adm-action-title">{action.title}</div>
+                  <div className="adm-action-desc">{action.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
           <div className="panel-grid">
             <div className="card">
               <div className="card-hd"><div className="card-title">Pending Leave Requests</div></div>
