@@ -1,9 +1,20 @@
 import React, { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, fetchAllPaged } from '../lib/supabase'
 import type { Employee, PayrollPeriod, PayrollRecord, AttendanceRecord, LeaveRequest, LeaveBalance, Announcement } from '../lib/supabase'
 import { useToast } from '../hooks/useToast'
+import { useTheme } from '../context/ThemeContext'
+import { getChartTheme } from '../lib/chartTheme'
 import { SkeletonLoader } from '../components/SkeletonLoader'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import {
+  parseSettingsForPayroll,
+  computeAttendanceTimeAdjustments,
+  computeLeaveDeductionsSil,
+  dailyRateFromMonthly,
+  hourlyRateFromMonthly,
+  basicEarnedForPayPeriod,
+  expandApprovedLeaveCalendarDays,
+} from '../lib/payrollPh'
 
 // ── 2025 Philippine Government Contribution Tables ──
 
@@ -68,6 +79,8 @@ export function PayrollOfficerDashboard({ activeSection, onNavigate }: PayrollPr
   const [showEditRecord, setShowEditRecord] = useState<(PayrollRecord & { employee?: Employee }) | null>(null)
   const [newPeriod, setNewPeriod] = useState({ period_name: '', start_date: '', end_date: '', pay_date: '' })
   const { showToast } = useToast()
+  const { theme } = useTheme()
+  const chart = getChartTheme(theme)
   const [announcements, setAnnouncements] = useState<Announcement[]>([])
 
   useEffect(() => { fetchAll() }, [])
@@ -88,19 +101,21 @@ export function PayrollOfficerDashboard({ activeSection, onNavigate }: PayrollPr
 
   async function fetchAll() {
     setLoading(true)
-    const [periodRes, empRes, annRes] = await Promise.all([
+    const [periodRes, empPaged, annRes] = await Promise.all([
       supabase.from('payroll_periods').select('*').order('created_at', { ascending: false }),
-      supabase.from('employees').select('*').eq('status', 'active').order('full_name'),
+      fetchAllPaged<Employee>(async (from, to) =>
+        supabase.from('employees').select('*').eq('status', 'active').order('full_name').range(from, to),
+      ),
       supabase.from('announcements').select('*').order('created_at', { ascending: false }).limit(20),
     ])
 
     if (periodRes.error) showToast(`Payroll periods: ${periodRes.error.message}`, 'error')
-    if (empRes.error) showToast(`Employees: ${empRes.error.message}`, 'error')
+    if (empPaged.error) showToast(`Employees: ${empPaged.error.message}`, 'error')
     if (annRes.error) showToast(`Announcements: ${annRes.error.message}`, 'error')
 
     const perList = (periodRes.data || []) as PayrollPeriod[]
     setPeriods(perList)
-    setEmployees((empRes.data || []) as Employee[])
+    setEmployees(empPaged.data as Employee[])
     setAnnouncements((annRes.data || []) as Announcement[])
     if (perList.length > 0) {
       setActivePeriod(perList[0])
@@ -130,95 +145,76 @@ export function PayrollOfficerDashboard({ activeSection, onNavigate }: PayrollPr
   async function handleGeneratePayroll(period: PayrollPeriod) {
     showToast('Generating payroll…', 'info')
 
-    // Fetch attendance & leave data for this pay period
-    const [attRes, leaveRes, balRes] = await Promise.all([
+    const calendarYear = new Date(period.start_date + 'T12:00:00').getFullYear()
+    const yearStart = `${calendarYear}-01-01`
+
+    const [settRes, attRes, leaveRes, balRes] = await Promise.all([
+      supabase.from('system_settings').select('key, value'),
       supabase.from('attendance_records').select('*')
         .gte('date', period.start_date).lte('date', period.end_date),
       supabase.from('leave_requests').select('*')
-        .eq('status', 'approved')
-        .lte('start_date', period.end_date).gte('end_date', period.start_date),
-      supabase.from('leave_balances').select('*')
-        .eq('year', new Date(period.start_date).getFullYear()),
+        .in('status', ['approved', 'hr_approved'])
+        .lte('start_date', period.end_date)
+        .gte('end_date', yearStart),
+      supabase.from('leave_balances').select('*').eq('year', calendarYear),
     ])
+    if (settRes.error) showToast(`Settings: ${settRes.error.message}`, 'error')
+    if (attRes.error) showToast(`Attendance: ${attRes.error.message}`, 'error')
+    if (leaveRes.error) showToast(`Leave: ${leaveRes.error.message}`, 'error')
+    if (balRes.error) showToast(`Balances: ${balRes.error.message}`, 'error')
+
+    const settingsMap: Record<string, string> = {}
+    for (const row of settRes.data || []) {
+      const r = row as { key: string; value: string }
+      settingsMap[r.key] = String(r.value ?? '')
+    }
+    const policy = parseSettingsForPayroll(settingsMap)
+
     const allAtt = (attRes.data || []) as AttendanceRecord[]
     const allLeaves = (leaveRes.data || []) as LeaveRequest[]
     const allBalances = (balRes.data || []) as LeaveBalance[]
 
-    const WORK_DAYS_PER_MONTH = 22
-    const HOURS_PER_DAY = 8
-    const OT_MULTIPLIER = 1.25
-
     const insertData = employees.map(emp => {
-      const basic = Number(emp.basic_salary)
-      const dailyRate = basic / WORK_DAYS_PER_MONTH
-      const hourlyRate = dailyRate / HOURS_PER_DAY
+      const basicMonthly = Math.max(0, parseFloat(String(emp.basic_salary ?? '')) || 0)
+      const basicEarned = basicEarnedForPayPeriod(basicMonthly, period.start_date, period.end_date)
+      const cutOffProration = basicMonthly > 0 ? basicEarned / basicMonthly : 1
 
-      // ── Overtime from attendance ──
+      const dailyRate = dailyRateFromMonthly(basicMonthly, policy)
+      const hourlyRate = hourlyRateFromMonthly(basicMonthly, policy)
+
       const empAtt = allAtt.filter(a => a.employee_id === emp.id)
-      let totalOTHours = 0
-      empAtt.forEach(a => {
-        if (a.time_in && a.time_out) {
-          const inTime = new Date(`2000-01-01T${a.time_in}`)
-          const outTime = new Date(`2000-01-01T${a.time_out}`)
-          const hoursWorked = (outTime.getTime() - inTime.getTime()) / (1000 * 60 * 60) - 1 // minus 1hr lunch
-          if (hoursWorked > HOURS_PER_DAY) totalOTHours += hoursWorked - HOURS_PER_DAY
-        }
-      })
-      const overtimePay = parseFloat((totalOTHours * hourlyRate * OT_MULTIPLIER).toFixed(2))
+      const leaveDatesInPeriod = expandApprovedLeaveCalendarDays(emp.id, allLeaves, period.start_date, period.end_date)
+      const { overtimeHours, undertimeHours } = computeAttendanceTimeAdjustments(empAtt, policy, leaveDatesInPeriod)
+      const otPayRaw = overtimeHours * hourlyRate * policy.otMultiplier
+      const utDedRaw = undertimeHours * hourlyRate
+      const overtimePay = Number.isFinite(otPayRaw) ? Math.max(0, parseFloat(otPayRaw.toFixed(2))) : 0
+      const undertimeDeduction = Number.isFinite(utDedRaw) ? Math.max(0, parseFloat(utDedRaw.toFixed(2))) : 0
 
-      // ── Absence deduction ──
-      const absentDays = empAtt.filter(a => a.status === 'absent').length
+      // Do not charge “absence” on days already covered by approved leave (attendance often still “absent”).
+      const absentDays = empAtt.filter(
+        a => a.status === 'absent' && !leaveDatesInPeriod.has(a.date),
+      ).length
       const absenceDeduction = parseFloat((absentDays * dailyRate).toFixed(2))
 
-      // ── Leave balance check (unpaid leave deduction) ──
-      const empLeaves = allLeaves.filter(l => l.employee_id === emp.id)
-      let unpaidLeaveDays = 0
-
-      // LeaveBalance schema in this app stores remaining days by category.
       const bal = allBalances.find(b => b.employee_id === emp.id)
-      const remainingByCategory: Record<'vacation' | 'sick' | 'emergency' | 'special', number> = {
-        vacation: bal?.vacation ?? 0,
-        sick: bal?.sick ?? 0,
-        emergency: bal?.emergency ?? 0,
-        special: bal?.special ?? 0,
-      }
-
-      const categoryForLeaveType = (leaveType: LeaveRequest['leave_type']): keyof typeof remainingByCategory => {
-        switch (leaveType) {
-          case 'vacation': return 'vacation'
-          case 'sick': return 'sick'
-          case 'emergency': return 'emergency'
-          default: return 'special' // maternity, paternity, other
-        }
-      }
-
-      empLeaves.forEach(l => {
-        const category = categoryForLeaveType(l.leave_type)
-        const remaining = remainingByCategory[category]
-        if (remaining <= 0) unpaidLeaveDays += l.days_count
-        else if (l.days_count > remaining) {
-          unpaidLeaveDays += l.days_count - remaining
-          remainingByCategory[category] = 0
-        } else {
-          remainingByCategory[category] = remaining - l.days_count
-        }
-      })
+      const { unpaidLeaveDays } = computeLeaveDeductionsSil(emp, period.start_date, period.end_date, calendarYear, allLeaves, bal)
       const unpaidLeaveDeduction = parseFloat((unpaidLeaveDays * dailyRate).toFixed(2))
 
       // ── Government contributions (2025 tables) ──
-      const gross = basic + overtimePay
-      const sss = computeSSS(basic) // based on basic, not gross
-      const ph = computePhilHealth(basic)
-      const pagibig = computePagIBIG(basic)
+      // Gross basic matches the pay window; statutory amounts prorated by the same factor as basic.
+      const gross = basicEarned + overtimePay
+      const sss = parseFloat((computeSSS(basicMonthly) * cutOffProration).toFixed(2))
+      const ph = parseFloat((computePhilHealth(basicMonthly) * cutOffProration).toFixed(2))
+      const pagibig = parseFloat((computePagIBIG(basicMonthly) * cutOffProration).toFixed(2))
       const taxable = gross - sss - ph - pagibig
-      const tax = computeWithholdingTax(taxable)
-      const otherDeductions = absenceDeduction + unpaidLeaveDeduction
+      const tax = computeWithholdingTax(Math.max(0, taxable))
+      const otherDeductions = absenceDeduction + unpaidLeaveDeduction + undertimeDeduction
       const net = parseFloat((gross - sss - ph - pagibig - tax - otherDeductions).toFixed(2))
 
       return {
         period_id: period.id,
         employee_id: emp.id,
-        basic_salary: basic,
+        basic_salary: basicEarned,
         allowances: 0,
         overtime_pay: overtimePay,
         gross_pay: parseFloat(gross.toFixed(2)),
@@ -336,6 +332,9 @@ export function PayrollOfficerDashboard({ activeSection, onNavigate }: PayrollPr
           <div>
             <div className="ph-title">Payroll Officer Portal</div>
             <div className="ph-sub">Manage payroll periods and employee compensation</div>
+            <div className="ph-sub" style={{ marginTop: 6, fontSize: '.78rem', color: 'var(--ink3)', maxWidth: 720 }}>
+              Basic is prorated by calendar days in the period. Time in/out: grace adjusts paid start; short hours vs regular schedule deduct at straight hourly rate; OT defaults to time after scheduled end (toggle early clock-in OT in Admin). Absences on approved leave dates are skipped. SIL then balances for vacation/sick.
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button
@@ -400,14 +399,14 @@ export function PayrollOfficerDashboard({ activeSection, onNavigate }: PayrollPr
             <div style={{ height: 250, padding: 16 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={[
-                  { name: 'Gross Pay', value: totalGross, fill: '#3b82f6' },
-                  { name: 'Deductions', value: totalDeductions, fill: '#f43f5e' },
-                  { name: 'Net Pay', value: totalNet, fill: '#10b981' }
+                  { name: 'Gross Pay', value: totalGross, fill: chart.series.blue },
+                  { name: 'Deductions', value: totalDeductions, fill: chart.series.red },
+                  { name: 'Net Pay', value: totalNet, fill: chart.series.green },
                 ]} margin={{ top: 10, right: 30, left: -10, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} formatter={(val: any) => `₱${Number(val).toLocaleString('en-PH', { minimumFractionDigits: 2 })}`} />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chart.gridStroke} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: chart.tickFill }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: chart.tickFill }} axisLine={false} tickLine={false} />
+                  <Tooltip cursor={{ fill: chart.cursorFill }} contentStyle={chart.tooltipContentStyle} formatter={(val: unknown) => `₱${Number(val).toLocaleString('en-PH', { minimumFractionDigits: 2 })}`} />
                   <Bar dataKey="value" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -447,7 +446,7 @@ export function PayrollOfficerDashboard({ activeSection, onNavigate }: PayrollPr
       {activeSection === 'summary' && (
         <div className="panel-grid">
           {periods.map(p => {
-            const statusColor: Record<string, string> = { draft: 'var(--slate)', processing: 'var(--warn)', review: '#0ea5e9', approved: 'var(--teal)', paid: 'var(--ok)' }
+            const statusColor: Record<string, string> = { draft: 'var(--slate)', processing: 'var(--warn)', review: 'var(--accent)', approved: 'var(--teal)', paid: 'var(--ok)' }
             return (
               <div className="stat-tile" key={p.id} style={{ borderLeft: `3px solid ${statusColor[p.status] || 'var(--line)'}`, cursor: 'pointer' }} onClick={() => { setActivePeriod(p); fetchRecords(p.id); onNavigate('records') }}>
                 <div className="stat-label">{p.period_name}</div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { AuthProvider, useAuth } from './hooks/useAuth'
 import { ToastProvider } from './hooks/useToast'
+import { ThemeProvider, useTheme } from './context/ThemeContext'
 import { LoginPage } from './pages/LoginPage'
 import { AdminDashboard } from './pages/AdminDashboard'
 import { HRManagerDashboard } from './pages/HRManagerDashboard'
@@ -133,13 +134,9 @@ const pageTitles: Record<string, string> = {
 
 function AppShell() {
   const { user, profile, loading } = useAuth()
-  const [theme, setTheme] = useState<'light' | 'dark'>('light')
+  const { theme, toggleTheme } = useTheme()
   const [activeSection, setActiveSection] = useState('dashboard')
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : '')
-  }, [theme])
 
   // Set default section per role
   useEffect(() => {
@@ -200,7 +197,7 @@ function AppShell() {
         <Topbar
           pageName={pageTitles[activeSection] || activeSection}
           theme={theme}
-          onToggleTheme={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
+          onToggleTheme={toggleTheme}
           onMenuToggle={() => setIsSidebarOpen(true)}
         />
         {renderDashboard()}
@@ -213,7 +210,9 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
-        <AppShell />
+        <ThemeProvider>
+          <AppShell />
+        </ThemeProvider>
       </ToastProvider>
     </AuthProvider>
   )

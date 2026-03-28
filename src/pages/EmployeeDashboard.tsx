@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { supabase, sanitizeError, logAudit } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
+import { useTheme } from '../context/ThemeContext'
+import { getChartTheme } from '../lib/chartTheme'
 import type { Employee, LeaveRequest, AttendanceRecord, PayrollRecord, LeaveBalance, Announcement } from '../lib/supabase'
 import { useToast } from '../hooks/useToast'
 import { SkeletonLoader } from '../components/SkeletonLoader'
@@ -14,6 +16,8 @@ interface EmpProps {
 
 export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
   const { profile } = useAuth()
+  const { theme } = useTheme()
+  const chart = getChartTheme(theme)
   const { showToast } = useToast()
   const [employee, setEmployee] = useState<Employee | null>(null)
   const [leaves, setLeaves] = useState<LeaveRequest[]>([])
@@ -227,7 +231,7 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
 
   const balanceItems = [
     { label: 'Vacation Leave', current: leaveBalances?.vacation ?? 0, total: 15, color: 'var(--teal)' },
-    { label: 'Sick Leave', current: leaveBalances?.sick ?? 0, total: 15, color: '#0ea5e9' },
+    { label: 'Sick Leave', current: leaveBalances?.sick ?? 0, total: 15, color: 'var(--accent)' },
     { label: 'Emergency Leave', current: leaveBalances?.emergency ?? 0, total: 3, color: 'var(--warn)' },
     { label: 'Special Leave', current: leaveBalances?.special ?? 0, total: 5, color: 'var(--purple)' },
   ]
@@ -284,11 +288,11 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
           )}
 
           {announcements.length > 0 && (
-            <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, padding: '12px 16px', marginBottom: 16, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <div className="emp-announce-inline">
               <span style={{ fontSize: '1.1rem' }}>📢</span>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: '.88rem', color: '#1e40af' }}>{announcements[0].title}</div>
-                <div style={{ fontSize: '.8rem', color: '#3730a3', marginTop: 2 }}>{announcements[0].body}</div>
+              <div style={{ flex: 1 }}>
+                <div className="emp-announce-title">{announcements[0].title}</div>
+                <div className="emp-announce-body">{announcements[0].body}</div>
               </div>
               <button className="btn btn-ghost btn-xs" style={{ marginLeft: 'auto', flexShrink: 0 }} onClick={() => onNavigate('notifications')}>See all</button>
             </div>
@@ -342,11 +346,11 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
                 <div style={{ height: 250, padding: 16 }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={balanceItems} margin={{ top: 10, right: 30, left: -20, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                      <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                      <Bar dataKey="current" name="Available Days" fill="#10b981" radius={[4, 4, 0, 0]} />
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chart.gridStroke} />
+                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: chart.tickFill }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 11, fill: chart.tickFill }} axisLine={false} tickLine={false} />
+                      <Tooltip cursor={{ fill: chart.cursorFill }} contentStyle={chart.tooltipContentStyle} />
+                      <Bar dataKey="current" name="Available Days" fill={chart.series.green} radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -421,6 +425,9 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
               <div className="prof-breadcrumb">My Portal / <strong>Leave Requests</strong></div>
               <div className="prof-title">Leave Requests</div>
               <div className="prof-subtitle">Submit and track your leave applications.</div>
+              <p style={{ margin: '10px 0 0', fontSize: '.78rem', color: 'var(--ink3)', maxWidth: 560 }}>
+                Philippine SIL: after one year with the employer you are entitled to five paid days per calendar year (usable as vacation or sick). Payroll applies those days before company leave balances; unused SIL may be commuted to cash at year-end per company policy.
+              </p>
             </div>
             <button className="btn btn-outline btn-sm btn-purple" onClick={() => setShowApplyLeave(true)}>+ File Leave</button>
           </div>
@@ -496,9 +503,9 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
             <div className="att-cal-hd">
               <div className="att-cal-title">{monthName} {year}</div>
               <div className="att-cal-legend">
-                <div className="att-cal-leg-item"><div className="att-cal-dot" style={{ background: '#10b981' }} /> On Time</div>
-                <div className="att-cal-leg-item"><div className="att-cal-dot" style={{ background: '#f59e0b' }} /> Late</div>
-                <div className="att-cal-leg-item"><div className="att-cal-dot" style={{ background: '#8b5cf6' }} /> Leave</div>
+                <div className="att-cal-leg-item"><div className="att-cal-dot" style={{ background: 'var(--ok)' }} /> On Time</div>
+                <div className="att-cal-leg-item"><div className="att-cal-dot" style={{ background: 'var(--warn)' }} /> Late</div>
+                <div className="att-cal-leg-item"><div className="att-cal-dot" style={{ background: 'var(--purple)' }} /> Leave</div>
               </div>
             </div>
             <div className="att-cal-grid">
@@ -578,7 +585,7 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
                   <div className="pay-badges">
                     {isNew && <span className="pay-tag-new">NEW</span>}
                     <span className="pay-badge-released">{p.status.toUpperCase()}</span>
-                    <button className="btn btn-ghost btn-sm" style={{ border: '1px solid var(--line)', background: 'var(--bg)', color: '#0369a1', fontSize: '.65rem' }} onClick={() => handleDownloadPDF(p)}>📄 PDF</button>
+                    <button className="btn btn-ghost btn-sm" style={{ border: '1px solid var(--line)', background: 'var(--bg)', color: 'var(--accent)', fontSize: '.65rem' }} onClick={() => handleDownloadPDF(p)}>📄 PDF</button>
                     {isNew && <button className="btn btn-ghost btn-sm" style={{ border: '1px solid var(--line)', background: 'var(--bg)', color: 'var(--ink3)', fontSize: '.65rem' }} onClick={() => handleMarkViewed(p.id)}>✓ Mark Viewed</button>}
                   </div>
                 </div>
@@ -705,11 +712,11 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
 
           {/* Latest payslip notification */}
           {latestPayslip && (
-            <div style={{ marginBottom: 12, borderRadius: 10, padding: '12px 16px', border: '1px solid #86efac', background: '#f0fdf4', display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div className="emp-success-panel">
               <span style={{ fontSize: '1.3rem' }}>💰</span>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: '.88rem', color: '#065f46' }}>Payslip Available — {latestPayslip.period?.period_name}</div>
-                <div style={{ fontSize: '.78rem', color: '#047857', marginTop: 2 }}>Net Pay: ₱{Number(latestPayslip.net_pay).toLocaleString()}</div>
+              <div style={{ flex: 1 }}>
+                <div className="emp-success-title">Payslip Available — {latestPayslip.period?.period_name}</div>
+                <div className="emp-success-sub">Net Pay: ₱{Number(latestPayslip.net_pay).toLocaleString()}</div>
               </div>
               <button className="btn btn-ghost btn-xs" style={{ marginLeft: 'auto' }} onClick={() => onNavigate('payslips')}>View</button>
             </div>
@@ -754,7 +761,7 @@ export function EmployeeDashboard({ activeSection, onNavigate }: EmpProps) {
               <div className="form-grp"><label className="form-lbl">End Date *</label><input className="form-ctrl" type="date" value={newLeave.end_date} onChange={e => setNewLeave(p => ({ ...p, end_date: e.target.value }))} /></div>
             </div>
             {newLeave.start_date && newLeave.end_date && new Date(newLeave.end_date) >= new Date(newLeave.start_date) && (
-              <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 6, padding: '6px 12px', marginBottom: 12, fontSize: '.78rem', color: '#065f46' }}>
+              <div className="emp-leave-days-hint">
                 This request spans <strong>{Math.ceil((new Date(newLeave.end_date).getTime() - new Date(newLeave.start_date).getTime()) / 86400000) + 1} day(s)</strong>
               </div>
             )}

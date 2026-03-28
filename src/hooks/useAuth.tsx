@@ -17,6 +17,9 @@ interface AuthContextType {
   loading: boolean
   loginAttempts: number
   lockedUntil: number | null
+  /** Set when Supabase redirects back with #error=… (e.g. expired email confirmation link) */
+  authRedirectNotice: string | null
+  clearAuthRedirectNotice: () => void
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
   signOut: () => Promise<void>
   refreshProfile: () => Promise<void>
@@ -30,7 +33,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [loginAttempts, setLoginAttempts] = useState(0)
   const [lockedUntil, setLockedUntil] = useState<number | null>(null)
+  const [authRedirectNotice, setAuthRedirectNotice] = useState<string | null>(null)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearAuthRedirectNotice = useCallback(() => setAuthRedirectNotice(null), [])
 
   // ─── Idle timeout reset ───────────────────────────────────
   const resetIdleTimer = useCallback(() => {
@@ -69,11 +74,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    let cancelled = false
+
+    const consumeUrlHashAfterSession = () => {
+      const raw = window.location.hash.replace(/^#/, '')
+      if (!raw) return
+      const params = new URLSearchParams(raw)
+      const hashError = params.get('error')
+      const accessToken = params.get('access_token')
+      const clearHash = () => {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search)
+      }
+      if (hashError) {
+        const desc = params.get('error_description')
+        const code = params.get('error_code')
+        let msg = desc ? decodeURIComponent(desc.replace(/\+/g, ' ')) : hashError
+        if (code === 'otp_expired' || hashError === 'access_denied') {
+          msg = `${msg} If the account is already confirmed, sign in below. Otherwise ask an admin to delete the user in Supabase Auth (if needed) and create the account again, or use “Resend” in Supabase Auth for that user. Also ensure your app URL is under Supabase → Authentication → URL Configuration → Redirect URLs.`
+        }
+        setAuthRedirectNotice(msg)
+        clearHash()
+      } else if (accessToken) {
+        // Let the client finish reading tokens from the hash before stripping the URL
+        setTimeout(clearHash, 150)
+      }
+    }
+
+    const bootstrap = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (cancelled) return
       setUser(session?.user ?? null)
-      if (session?.user) fetchProfile(session.user.id).finally(() => setLoading(false))
-      else setLoading(false)
-    })
+      if (session?.user) {
+        await fetchProfile(session.user.id)
+      }
+      setLoading(false)
+      consumeUrlHashAfterSession()
+    }
+
+    bootstrap()
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
@@ -81,7 +119,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       else setProfile(null)
     })
 
-    return () => subscription.unsubscribe()
+    return () => {
+      cancelled = true
+      subscription.unsubscribe()
+    }
   }, [])
 
   // ─── Sign in with rate limiting ───────────────────────────
@@ -108,6 +149,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Success: reset counter
     setLoginAttempts(0)
     setLockedUntil(null)
+    setAuthRedirectNotice(null)
     if (data.user) {
       await fetchProfile(data.user.id)
       resetIdleTimer()
@@ -123,7 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, loginAttempts, lockedUntil, signIn, signOut, refreshProfile }}>
+    <AuthContext.Provider value={{ user, profile, loading, loginAttempts, lockedUntil, authRedirectNotice, clearAuthRedirectNotice, signIn, signOut, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   )

@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { supabase, logAudit, sanitizeError, exportCSV } from '../lib/supabase'
-import type { Employee, LeaveRequest, AttendanceRecord, LeaveBalance, Announcement } from '../lib/supabase'
+import { supabase, logAudit, sanitizeError, exportCSV, getEmailConfirmRedirectUrl, fetchAllPaged } from '../lib/supabase'
+import type { Employee, LeaveRequest, AttendanceRecord, LeaveBalance, Announcement, Department, UserRole } from '../lib/supabase'
 import { useToast } from '../hooks/useToast'
 import { useAuth } from '../hooks/useAuth'
+import { useTheme } from '../context/ThemeContext'
+import { getChartTheme } from '../lib/chartTheme'
 import { SkeletonLoader } from '../components/SkeletonLoader'
-import { validateRequired, validateDateRange, firstError } from '../lib/validation'
+import { validateRequired, validateDateRange, firstError, validateEmail, validateTemporaryPassword, getTemporaryPasswordChecks, generateSecureTemporaryPassword } from '../lib/validation'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
@@ -14,11 +16,36 @@ interface HRProps {
   onNavigate: (section: string) => void
 }
 
+const emptyHireForm = (): {
+  first_name: string
+  last_name: string
+  email: string
+  password: string
+  role: UserRole
+  department: string
+  position: string
+  hire_date: string
+  basic_salary: number
+} => ({
+  first_name: '',
+  last_name: '',
+  email: '',
+  password: '',
+  role: 'employee',
+  department: '',
+  position: '',
+  hire_date: new Date().toISOString().split('T')[0],
+  basic_salary: 0,
+})
+
 export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
   const { profile } = useAuth()
+  const { theme } = useTheme()
+  const chart = getChartTheme(theme)
   const { showToast } = useToast()
 
   const [employees, setEmployees] = useState<Employee[]>([])
+  const [departments, setDepartments] = useState<Department[]>([])
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([])
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
   const [leaveBalances, setLeaveBalances] = useState<LeaveBalance[]>([])
@@ -26,6 +53,8 @@ export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
   const [loading, setLoading] = useState(true)
 
   // Modals
+  const [showAddEmployee, setShowAddEmployee] = useState(false)
+  const [newHire, setNewHire] = useState(emptyHireForm)
   const [showAddLeave, setShowAddLeave] = useState(false)
   const [showAddAttendance, setShowAddAttendance] = useState(false)
   const [showAddLeaveBalance, setShowAddLeaveBalance] = useState(false)
@@ -52,14 +81,19 @@ export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
 
   const fetchAll = useCallback(async () => {
     setLoading(true)
-    const [empRes, leaveRes, attRes, balRes, annRes] = await Promise.all([
-      supabase.from('employees').select('*').order('full_name'),
+    const [empPaged, deptRes, leaveRes, attRes, balRes, annRes] = await Promise.all([
+      fetchAllPaged<Employee>(async (from, to) =>
+        supabase.from('employees').select('*').order('full_name').range(from, to),
+      ),
+      supabase.from('departments').select('*').order('name'),
       supabase.from('leave_requests').select('*, employee:employees!employee_id(*)').order('created_at', { ascending: false }),
       supabase.from('attendance_records').select('*, employee:employees!employee_id(*)').order('date', { ascending: false }).limit(100),
       supabase.from('leave_balances').select('*, employee:employees!employee_id(full_name,employee_id)').order('employee_id'),
       supabase.from('announcements').select('*, author:profiles(full_name)').order('created_at', { ascending: false }),
     ])
-    setEmployees((empRes.data || []) as Employee[])
+    if (empPaged.error) showToast(`Employees: ${sanitizeError(empPaged.error)}`, 'error')
+    setEmployees(empPaged.data as Employee[])
+    setDepartments((deptRes.data || []) as Department[])
     setLeaveRequests((leaveRes.data || []) as LeaveRequest[])
     setAttendance((attRes.data || []) as AttendanceRecord[])
     setLeaveBalances((balRes.data || []) as LeaveBalance[])
@@ -91,6 +125,77 @@ export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
     showToast(action === 'approved' ? 'Leave request approved' : 'Leave request rejected', action === 'approved' ? 'success' : 'error')
     setReviewLeave(null)
     setHrNotes('')
+    fetchAll()
+  }
+
+  // ── Add employee + auth (HR cannot assign admin role) ────
+  async function handleHireEmployee() {
+    const errs = validateRequired({
+      first_name: newHire.first_name,
+      last_name: newHire.last_name,
+      email: newHire.email,
+      department: newHire.department,
+      hire_date: newHire.hire_date,
+    })
+    const emailErr = validateEmail(newHire.email)
+    if (Object.keys(errs).length) { showToast(firstError(errs) || 'Please fill required fields', 'warn'); return }
+    if (emailErr) { showToast(emailErr, 'warn'); return }
+    if (newHire.role === 'admin') { showToast('Only an administrator can create admin accounts', 'warn'); return }
+    const pwErr = validateTemporaryPassword(newHire.password)
+    if (pwErr) { showToast(pwErr, 'warn'); return }
+    if (newHire.basic_salary < 0) { showToast('Salary cannot be negative', 'warn'); return }
+
+    const fullName = `${newHire.first_name} ${newHire.last_name}`.trim()
+    const { data: authData, error: authErr } = await supabase.auth.signUp({
+      email: newHire.email,
+      password: newHire.password,
+      options: {
+        emailRedirectTo: getEmailConfirmRedirectUrl(),
+        data: { full_name: fullName, role: newHire.role },
+      },
+    })
+    if (authErr) { showToast(sanitizeError(authErr), 'error'); return }
+    if (!authData.user?.id) {
+      showToast('Auth did not return a new user id. Check Supabase Auth settings or email confirmation.', 'error')
+      return
+    }
+
+    const { error: profileErr } = await supabase
+      .from('profiles')
+      .update({ role: newHire.role, department: newHire.department, position: newHire.position || null })
+      .eq('id', authData.user.id)
+    if (profileErr) { showToast(sanitizeError(profileErr), 'error'); return }
+
+    const { data: newEmp, error: empErr } = await supabase
+      .from('employees')
+      .insert({
+        full_name: fullName,
+        email: newHire.email,
+        department: newHire.department,
+        position: newHire.position || newHire.role.replace('_', ' '),
+        employee_id: `EMP-${Date.now().toString().slice(-5)}`,
+        hire_date: newHire.hire_date,
+        status: 'active',
+        basic_salary: newHire.basic_salary,
+        profile_id: authData.user.id,
+      })
+      .select('id')
+      .single()
+    if (empErr) { showToast(sanitizeError(empErr), 'error'); return }
+
+    const y = new Date(newHire.hire_date).getFullYear()
+    if (newEmp?.id) {
+      const { error: balErr } = await supabase.from('leave_balances').upsert(
+        { employee_id: newEmp.id, year: y, vacation: 15, sick: 15, emergency: 3, special: 5 },
+        { onConflict: 'employee_id,year' },
+      )
+      if (balErr) showToast(`Employee created; leave balance row: ${sanitizeError(balErr)}`, 'warn')
+    }
+
+    if (profile) await logAudit(profile.id, `HR created employee account: ${newHire.email}`, 'employees', undefined, null, { email: newHire.email, role: newHire.role })
+    showToast('Employee and sign-in account created. User may need to confirm email before first login.', 'success')
+    setShowAddEmployee(false)
+    setNewHire(emptyHireForm())
     fetchAll()
   }
 
@@ -355,15 +460,15 @@ export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
             <div style={{ height: 280, padding: 16 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={[
-                  { name: 'Total Emps', value: employees.length, fill: '#64748b' },
-                  { name: 'Active Emps', value: activeEmps.length, fill: '#10b981' },
-                  { name: 'Pending Leaves', value: pending.length, fill: '#f59e0b' },
-                  { name: 'Apprvd Leaves', value: approved.length, fill: '#3b82f6' },
+                  { name: 'Total Emps', value: employees.length, fill: chart.series.muted },
+                  { name: 'Active Emps', value: activeEmps.length, fill: chart.series.green },
+                  { name: 'Pending Leaves', value: pending.length, fill: chart.series.amber },
+                  { name: 'Apprvd Leaves', value: approved.length, fill: chart.series.blue },
                 ]} margin={{ top: 10, right: 30, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} allowDecimals={false} />
-                  <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chart.gridStroke} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: chart.tickFill }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: chart.tickFill }} axisLine={false} tickLine={false} allowDecimals={false} />
+                  <Tooltip cursor={{ fill: chart.cursorFill }} contentStyle={chart.tooltipContentStyle} />
                   <Bar dataKey="value" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -418,6 +523,7 @@ export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
           <div className="card-hd">
             <div><div className="card-title">All Employees</div><div className="card-sub">{empRows.length} / {employees.length} records</div></div>
             <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary btn-sm" onClick={() => { setNewHire(emptyHireForm()); setShowAddEmployee(true) }}>+ Add Employee</button>
               <button className="btn btn-ghost btn-sm" style={{ border: '1px solid var(--line)' }} onClick={handleExportEmployees}>📥 Export PDF</button>
             </div>
           </div>
@@ -475,6 +581,9 @@ export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
               <option value="rejected">Rejected</option>
             </select>
           </div>
+          <p style={{ margin: '0 0 12px', padding: '0 16px', fontSize: '.75rem', color: 'var(--ink3)' }}>
+            Approved vacation/sick is sequenced in payroll: up to 5 SIL days per year (after 1 year of service) apply first, then remaining company balances in <strong>Leave Balances</strong>; anything beyond is unpaid.
+          </p>
           <div className="tbl-wrap">
             <table className="tbl">
               <thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Action</th></tr></thead>
@@ -603,6 +712,99 @@ export function HRManagerDashboard({ activeSection, onNavigate }: HRProps) {
       )}
 
       {/* ══════════ MODALS ══════════ */}
+
+      {/* Add Employee Modal */}
+      <div className={`modal-ov${showAddEmployee ? ' active' : ''}`} onClick={e => { if (e.target === e.currentTarget) setShowAddEmployee(false) }}>
+        <div className="modal-box">
+          <div className="modal-hd">
+            <div><div className="modal-title">Add Employee</div><div className="modal-sub">Create login and employee record (HR cannot assign Administrator)</div></div>
+            <button className="modal-x" onClick={() => setShowAddEmployee(false)}>✕</button>
+          </div>
+          <div className="modal-body">
+            <div className="form-row fr-2">
+              <div className="form-grp"><label className="form-lbl">First Name *</label><input className="form-ctrl" value={newHire.first_name} onChange={e => setNewHire(p => ({ ...p, first_name: e.target.value }))} placeholder="First name" /></div>
+              <div className="form-grp"><label className="form-lbl">Last Name *</label><input className="form-ctrl" value={newHire.last_name} onChange={e => setNewHire(p => ({ ...p, last_name: e.target.value }))} placeholder="Last name" /></div>
+            </div>
+            <div className="form-grp"><label className="form-lbl">Work Email *</label><input className="form-ctrl" type="email" value={newHire.email} onChange={e => setNewHire(p => ({ ...p, email: e.target.value }))} placeholder="name@company.com" /></div>
+            <div className="form-grp">
+              <label className="form-lbl">Temporary Password *</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
+                <input
+                  className="form-ctrl"
+                  type="password"
+                  autoComplete="new-password"
+                  value={newHire.password}
+                  onChange={e => setNewHire(p => ({ ...p, password: e.target.value }))}
+                  placeholder="12+ chars, mixed case, number, symbol"
+                  style={{ flex: '1 1 200px', minWidth: 0 }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    const pw = generateSecureTemporaryPassword()
+                    setNewHire(p => ({ ...p, password: pw }))
+                    showToast('Strong password generated. Share it through a secure channel.', 'success')
+                  }}
+                >
+                  Generate secure
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={!newHire.password}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(newHire.password)
+                      showToast('Password copied', 'success')
+                    } catch {
+                      showToast('Clipboard not available', 'warn')
+                    }
+                  }}
+                >
+                  Copy
+                </button>
+              </div>
+              <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: '.68rem', lineHeight: 1.5, color: 'var(--ink3)', listStyle: 'none' }}>
+                {getTemporaryPasswordChecks(newHire.password).map(c => (
+                  <li key={c.label} style={{ color: c.ok ? 'var(--ok)' : 'var(--ink3)' }}>
+                    <span style={{ marginRight: 6 }}>{c.ok ? '✓' : '○'}</span>
+                    {c.label}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="form-row fr-2">
+              <div className="form-grp"><label className="form-lbl">Department *</label>
+                <input
+                  className="form-ctrl"
+                  list="hr-hire-depts"
+                  value={newHire.department}
+                  onChange={e => setNewHire(p => ({ ...p, department: e.target.value }))}
+                  placeholder="Type or pick from list"
+                />
+                <datalist id="hr-hire-depts">
+                  {departments.map(d => <option key={d.id} value={d.name} />)}
+                </datalist>
+              </div>
+              <div className="form-grp"><label className="form-lbl">System Role *</label>
+                <select className="form-ctrl" value={newHire.role} onChange={e => setNewHire(p => ({ ...p, role: e.target.value as UserRole }))}>
+                  <option value="employee">Employee</option>
+                  <option value="supervisor">Supervisor</option>
+                  <option value="payroll_officer">Payroll Officer</option>
+                  <option value="hr_manager">HR Manager</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-grp"><label className="form-lbl">Position / Job Title</label><input className="form-ctrl" value={newHire.position} onChange={e => setNewHire(p => ({ ...p, position: e.target.value }))} placeholder="e.g. Accounting Staff" /></div>
+            <div className="form-row fr-2">
+              <div className="form-grp"><label className="form-lbl">Hire Date *</label><input className="form-ctrl" type="date" value={newHire.hire_date} onChange={e => setNewHire(p => ({ ...p, hire_date: e.target.value }))} /></div>
+              <div className="form-grp"><label className="form-lbl">Monthly Basic (₱)</label><input className="form-ctrl" type="number" min="0" step="0.01" value={newHire.basic_salary || ''} onChange={e => setNewHire(p => ({ ...p, basic_salary: Number(e.target.value) }))} /></div>
+            </div>
+            <button className="btn btn-primary" style={{ width: '100%', marginTop: 8 }} onClick={handleHireEmployee}>Create account &amp; employee</button>
+          </div>
+        </div>
+      </div>
 
       {/* Review Leave Modal */}
       <div className={`modal-ov${reviewLeave ? ' active' : ''}`} onClick={e => { if (e.target === e.currentTarget) setReviewLeave(null) }}>

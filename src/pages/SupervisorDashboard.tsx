@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, fetchAllPaged } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
+import { useTheme } from '../context/ThemeContext'
+import { getChartTheme } from '../lib/chartTheme'
 import type { Employee, LeaveRequest, AttendanceRecord, PayrollRecord, Announcement } from '../lib/supabase'
 import { useToast } from '../hooks/useToast'
 import { SkeletonLoader } from '../components/SkeletonLoader'
@@ -13,6 +15,8 @@ interface SupProps {
 
 export function SupervisorDashboard({ activeSection, onNavigate }: SupProps) {
   const { profile } = useAuth()
+  const { theme } = useTheme()
+  const chart = getChartTheme(theme)
   const [teamMembers, setTeamMembers] = useState<Employee[]>([])
   const [pendingLeaves, setPendingLeaves] = useState<LeaveRequest[]>([])
   const [allLeaves, setAllLeaves] = useState<LeaveRequest[]>([])
@@ -36,13 +40,15 @@ export function SupervisorDashboard({ activeSection, onNavigate }: SupProps) {
   async function fetchAll() {
     setLoading(true)
     // Fetch employees under this supervisor
-    const supervisorEmpRes = await supabase.from('employees').select('*').eq('status', 'active')
-    if (supervisorEmpRes.error) {
-      showToast(`Employees: ${supervisorEmpRes.error.message}`, 'error')
+    const empPaged = await fetchAllPaged<Employee>(async (from, to) =>
+      supabase.from('employees').select('*').eq('status', 'active').range(from, to),
+    )
+    if (empPaged.error) {
+      showToast(`Employees: ${empPaged.error.message}`, 'error')
       setLoading(false)
       return
     }
-    const allEmps = (supervisorEmpRes.data || []) as Employee[]
+    const allEmps = empPaged.data as Employee[]
 
     // Find supervisor's own employee record
     let supervisorEmpId: string | null = null
@@ -233,15 +239,15 @@ export function SupervisorDashboard({ activeSection, onNavigate }: SupProps) {
             <div style={{ height: 250, padding: 16 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={[
-                  { name: 'Team Members', value: teamMembers.length, fill: '#64748b' },
-                  { name: 'Pending Leaves', value: pendingLeaves.length, fill: '#f59e0b' },
-                  { name: 'Present Today', value: presentToday, fill: '#10b981' },
-                  { name: 'On Leave', value: approvedLeaves, fill: '#3b82f6' }
+                  { name: 'Team Members', value: teamMembers.length, fill: chart.series.muted },
+                  { name: 'Pending Leaves', value: pendingLeaves.length, fill: chart.series.amber },
+                  { name: 'Present Today', value: presentToday, fill: chart.series.green },
+                  { name: 'On Leave', value: approvedLeaves, fill: chart.series.blue },
                 ]} margin={{ top: 10, right: 30, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} allowDecimals={false} />
-                  <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chart.gridStroke} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: chart.tickFill }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: chart.tickFill }} axisLine={false} tickLine={false} allowDecimals={false} />
+                  <Tooltip cursor={{ fill: chart.cursorFill }} contentStyle={chart.tooltipContentStyle} />
                   <Bar dataKey="value" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -319,6 +325,9 @@ export function SupervisorDashboard({ activeSection, onNavigate }: SupProps) {
       {activeSection === 'leaves' && (
         <div className="card">
           <div className="card-hd"><div className="card-title">Team Leave Requests</div></div>
+          <p style={{ margin: 0, padding: '0 16px 12px', fontSize: '.75rem', color: 'var(--ink3)' }}>
+            Endorsed vacation/sick may count against statutory SIL (5 days/year after 1 year of service) in payroll before company leave banks.
+          </p>
           <div className="tbl-wrap">
             <table className="tbl">
               <thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Action</th></tr></thead>

@@ -1,14 +1,17 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { supabase, logAudit, sanitizeError, exportCSV } from '../lib/supabase'
+import { supabase, logAudit, sanitizeError, exportCSV, getEmailConfirmRedirectUrl, fetchAllPaged } from '../lib/supabase'
 import type { Employee, Department, LeaveRequest, AuditLog, Announcement, SystemSetting, PayrollPeriod, PayrollRecord, Profile } from '../lib/supabase'
 import { useToast } from '../hooks/useToast'
 import { useAuth } from '../hooks/useAuth'
+import { useTheme } from '../context/ThemeContext'
+import { getChartTheme } from '../lib/chartTheme'
 import { SkeletonLoader } from '../components/SkeletonLoader'
 import { ConfirmModal } from '../components/ConfirmModal'
-import { validateRequired, validateEmail, validateDateRange, firstError } from '../lib/validation'
+import { validateRequired, validateEmail, validateDateRange, firstError, validateTemporaryPassword, getTemporaryPasswordChecks, generateSecureTemporaryPassword } from '../lib/validation'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { parseOtCountEarlySetting } from '../lib/payrollPh'
 
 interface Stats {
   totalEmployees: number
@@ -28,6 +31,8 @@ const EMPTY_DEPT = { name: '', description: '' }
 
 export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
   const { profile } = useAuth()
+  const { theme } = useTheme()
+  const chart = getChartTheme(theme)
   const { showToast } = useToast()
 
   const [stats, setStats] = useState<Stats>({ totalEmployees: 0, activeDepts: 0, pendingLeavesCount: 0, pendingPayrolls: 0, totalUsers: 0 })
@@ -71,8 +76,10 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
 
   const fetchAll = useCallback(async () => {
     setLoading(true)
-    const [empRes, deptRes, leaveRes, auditRes, annRes, settRes, payrollRes] = await Promise.all([
-      supabase.from('employees').select('*, profile:profiles(id,role)').order('created_at', { ascending: false }),
+    const [empPaged, deptRes, leaveRes, auditRes, annRes, settRes, payrollRes] = await Promise.all([
+      fetchAllPaged<Employee>(async (from, to) =>
+        supabase.from('employees').select('*, profile:profiles(id,role)').order('created_at', { ascending: false }).range(from, to),
+      ),
       supabase.from('departments').select('*').order('name'),
       supabase.from('leave_requests').select('*, employee:employees!employee_id(*)').order('created_at', { ascending: false }),
       supabase.from('audit_logs').select('*, profile:profiles(full_name,email,role)').order('created_at', { ascending: false }).limit(100),
@@ -80,7 +87,8 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
       supabase.from('system_settings').select('*'),
       supabase.from('payroll_periods').select('*').in('status', ['review', 'processing']).order('created_at', { ascending: false }),
     ])
-    const emps = (empRes.data || []) as Employee[]
+    if (empPaged.error) showToast(`Employees: ${sanitizeError(empPaged.error)}`, 'error')
+    const emps = empPaged.data as Employee[]
     const depts = (deptRes.data || []) as Department[]
     const leaves = (leaveRes.data || []) as LeaveRequest[]
     const logs = (auditRes.data || []) as AuditLog[]
@@ -111,19 +119,36 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
     const emailErr = validateEmail(newUser.email)
     if (Object.keys(errs).length) { showToast(firstError(errs) || 'Please fill all required fields', 'warn'); return }
     if (emailErr) { showToast(emailErr, 'warn'); return }
-    if (!newUser.password || newUser.password.length < 8) { showToast('Password must be at least 8 characters', 'warn'); return }
+    const pwErr = validateTemporaryPassword(newUser.password)
+    if (pwErr) { showToast(pwErr, 'warn'); return }
 
-    // 1. Create auth user via signUp
+    // 1. Create auth user via signUp (emailRedirectTo must match Supabase Redirect URLs + Site URL)
     const { data: authData, error: authErr } = await supabase.auth.signUp({
       email: newUser.email,
       password: newUser.password,
-      options: { data: { full_name: `${newUser.first_name} ${newUser.last_name}`.trim(), role: newUser.role } }
+      options: {
+        emailRedirectTo: getEmailConfirmRedirectUrl(),
+        data: { full_name: `${newUser.first_name} ${newUser.last_name}`.trim(), role: newUser.role },
+      },
     })
     if (authErr) { showToast(sanitizeError(authErr), 'error'); return }
 
-    // 2. Update profile role (trigger creates profile with role=employee by default)
-    if (authData.user) {
-      await supabase.from('profiles').update({ role: newUser.role, department: newUser.department, position: newUser.position }).eq('id', authData.user.id)
+    if (!authData.user?.id) {
+      showToast(
+        'Auth did not return a new user id (try disabling “Confirm email” for testing, or check Supabase Auth logs).',
+        'error',
+      )
+      return
+    }
+
+    // 2. Update profile (trigger sets role from signup metadata; sync dept/position and role)
+    const { error: profileErr } = await supabase
+      .from('profiles')
+      .update({ role: newUser.role, department: newUser.department, position: newUser.position })
+      .eq('id', authData.user.id)
+    if (profileErr) {
+      showToast(sanitizeError(profileErr), 'error')
+      return
     }
 
     // 3. Create employee record
@@ -136,12 +161,12 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
       hire_date: new Date().toISOString().split('T')[0],
       status: 'active',
       basic_salary: 0,
-      profile_id: authData.user?.id || null,
+      profile_id: authData.user.id,
     })
     if (empErr) { showToast(sanitizeError(empErr), 'error'); return }
 
     if (profile) await logAudit(profile.id, `Created user account: ${newUser.email}`, 'employees', undefined, null, { email: newUser.email, role: newUser.role })
-    showToast('User account and employee record created', 'success')
+    showToast('Account created. User must confirm email before signing in.', 'success')
     setShowAddUser(false)
     setNewUser(EMPTY_USER)
     fetchAll()
@@ -536,7 +561,7 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
                 </button>
                 <button className="btn btn-ghost btn-sm" style={{ border: '1px solid var(--line)' }} onClick={handleExportDashboard}>📥 Export PDF</button>
-                <button className="btn btn-sm" style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#111827', color: 'white' }} onClick={() => setShowBroadcast(true)}>
+                <button className="btn btn-sm" style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--ink)', color: 'var(--bg)' }} onClick={() => setShowBroadcast(true)}>
                   <span>📢</span> Broadcast
                 </button>
               </div>
@@ -544,12 +569,12 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
           </div>
 
           <div className="adm-stats-row">
-            <div className="adm-stat-tile" style={{ cursor: 'pointer' }} onClick={() => onNavigate('users')}><div className="adm-stat-lbl">Total Employees</div><div className="adm-stat-val">{stats.totalEmployees}</div><div className="adm-stat-sub" style={{ color: '#10b981' }}>Active records</div></div>
+            <div className="adm-stat-tile" style={{ cursor: 'pointer' }} onClick={() => onNavigate('users')}><div className="adm-stat-lbl">Total Employees</div><div className="adm-stat-val">{stats.totalEmployees}</div><div className="adm-stat-sub" style={{ color: 'var(--ok)' }}>Active records</div></div>
             <div className="adm-stat-tile" style={{ cursor: 'pointer' }} onClick={() => onNavigate('departments')}><div className="adm-stat-lbl">Departments</div><div className="adm-stat-val">{stats.activeDepts}</div><div className="adm-stat-sub">Across the org</div></div>
             <div className="adm-stat-tile" style={{ cursor: 'pointer' }} onClick={() => onNavigate('leaves')}><div className="adm-stat-lbl">Pending Leaves</div><div className="adm-stat-val">{stats.pendingLeavesCount}</div><div className="adm-stat-sub">Awaiting action</div></div>
             <div className="adm-stat-tile" style={{ cursor: 'pointer' }} onClick={() => onNavigate('notifications')}><div className="adm-stat-lbl">Announcements</div><div className="adm-stat-val">{announcements.length}</div><div className="adm-stat-sub">Total broadcasts</div></div>
             <div className="adm-stat-tile" style={{ cursor: 'pointer' }} onClick={() => onNavigate('audit')}><div className="adm-stat-lbl">Audit Events</div><div className="adm-stat-val">{auditLogs.length}</div><div className="adm-stat-sub">Logged actions</div></div>
-            <div className="adm-stat-tile"><div className="adm-stat-lbl">System Alerts</div><div className="adm-stat-val">0</div><div className="adm-stat-sub" style={{ color: '#10b981' }}>All clear</div></div>
+            <div className="adm-stat-tile"><div className="adm-stat-lbl">System Alerts</div><div className="adm-stat-val">0</div><div className="adm-stat-sub" style={{ color: 'var(--ok)' }}>All clear</div></div>
           </div>
 
           <div className="adm-card" style={{ marginBottom: 20, marginTop: 20, padding: 20 }}>
@@ -557,15 +582,15 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
             <div style={{ height: 300, width: '100%', marginTop: 16 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={[
-                  { name: 'Employees', value: stats.totalEmployees, fill: '#3b82f6' },
-                  { name: 'Departments', value: stats.activeDepts, fill: '#10b981' },
-                  { name: 'Pending Leaves', value: stats.pendingLeavesCount, fill: '#f59e0b' },
-                  { name: 'Pending Payrolls', value: stats.pendingPayrolls, fill: '#8b5cf6' }
+                  { name: 'Employees', value: stats.totalEmployees, fill: chart.series.blue },
+                  { name: 'Departments', value: stats.activeDepts, fill: chart.series.green },
+                  { name: 'Pending Leaves', value: stats.pendingLeavesCount, fill: chart.series.amber },
+                  { name: 'Pending Payrolls', value: stats.pendingPayrolls, fill: chart.series.purple },
                 ]} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} allowDecimals={false} />
-                  <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chart.gridStroke} />
+                  <XAxis dataKey="name" tick={{ fontSize: 12, fill: chart.tickFill }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 12, fill: chart.tickFill }} axisLine={false} tickLine={false} allowDecimals={false} />
+                  <Tooltip cursor={{ fill: chart.cursorFill }} contentStyle={chart.tooltipContentStyle} />
                   <Bar dataKey="value" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -587,12 +612,12 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
             <div className="adm-card">
               <div className="adm-card-hd">
                 <div><span className="adm-card-title">Recent Activity</span><span className="adm-card-sub">From audit log</span></div>
-                <button className="btn btn-ghost btn-sm" style={{ color: '#3b82f6', fontSize: '.72rem' }} onClick={() => onNavigate('audit')}>View all →</button>
+                <button className="btn btn-ghost btn-sm" style={{ color: 'var(--accent)', fontSize: '.72rem' }} onClick={() => onNavigate('audit')}>View all →</button>
               </div>
               <div className="adm-feed">
                 {auditLogs.slice(0, 6).map(log => (
                   <div className="adm-feed-item" key={log.id}>
-                    <div className="adm-feed-icon" style={{ background: '#f0f9ff', color: '#0ea5e9' }}>📋</div>
+                    <div className="adm-feed-icon adm-feed-icon--accent">📋</div>
                     <div className="adm-feed-info">
                       <div><strong>{(log.profile as { full_name?: string })?.full_name || 'System'}</strong> — {log.action}</div>
                       <div className="adm-feed-date">{new Date(log.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
@@ -612,7 +637,10 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
                 <div className="adm-config-row"><span className="adm-config-lbl">Company</span><span className="adm-config-val">{settings.company_name || 'San Isidro LGU'}</span></div>
                 <div className="adm-config-row"><span className="adm-config-lbl">Work Hours</span><span className="adm-config-val">{settings.work_start || '8:00'} – {settings.work_end || '17:00'}</span></div>
                 <div className="adm-config-row"><span className="adm-config-lbl">Grace Period</span><span className="adm-config-val">{settings.grace_period_minutes || '10'} minutes</span></div>
-                <div className="adm-config-row" style={{ borderBottom: 'none' }}><span className="adm-config-lbl">OT Multiplier</span><span className="adm-config-val">{settings.ot_multiplier || '1.25'}x</span></div>
+                <div className="adm-config-row"><span className="adm-config-lbl">OT Multiplier</span><span className="adm-config-val">{settings.ot_multiplier || '1.25'}x</span></div>
+                <div className="adm-config-row"><span className="adm-config-lbl">Lunch (payroll)</span><span className="adm-config-val">{settings.lunch_break_minutes || '60'} min deducted from long days</span></div>
+                <div className="adm-config-row"><span className="adm-config-lbl">Work days / month</span><span className="adm-config-val">{settings.payroll_work_days_per_month || '22'}</span></div>
+                <div className="adm-config-row" style={{ borderBottom: 'none' }}><span className="adm-config-lbl">OT early clock-in</span><span className="adm-config-val">{parseOtCountEarlySetting(settings.payroll_ot_count_early) ? 'Included (excess daily hours)' : 'After end only (capped by net hours)'}</span></div>
               </div>
 
               {stats.pendingLeavesCount > 0 && (
@@ -621,7 +649,7 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
                   <div style={{ padding: '8px 16px 16px' }}>
                     {leaveRequests.filter(l => l.status === 'pending').slice(0, 5).map(l => (
                       <div key={l.id} className="adm-feed-item">
-                        <div className="adm-feed-icon" style={{ background: '#fff7ed', color: '#f97316' }}>📋</div>
+                        <div className="adm-feed-icon adm-feed-icon--warn">📋</div>
                         <div className="adm-feed-info">
                           <div><strong>{l.employee?.full_name}</strong> filed a <strong>{l.leave_type}</strong> leave ({l.days_count} days)</div>
                           <div className="adm-feed-date">{new Date(l.created_at).toLocaleDateString()}</div>
@@ -633,9 +661,9 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
                 </div>
               )}
               {pendingPayrolls.length > 0 && (
-                <div className="adm-alert" style={{ marginTop: 16, background: '#ecfdf5', borderColor: '#a7f3d0' }}>
+                <div className="adm-alert adm-alert--success" style={{ marginTop: 16 }}>
                   <span className="adm-alert-icon">💰</span>
-                  <div className="adm-alert-text" style={{ color: '#065f46' }}>
+                  <div className="adm-alert-text">
                     <strong>{pendingPayrolls.length} Pending Payroll{pendingPayrolls.length > 1 ? 's' : ''}</strong><br />
                     Periods awaiting admin approval.
                   </div>
@@ -657,7 +685,7 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
               <div style={{ padding: '8px 16px 16px' }}>
                 {leaveRequests.filter(l => l.status === 'pending').map(l => (
                   <div key={l.id} className="adm-feed-item">
-                    <div className="adm-feed-icon" style={{ background: '#fff7ed', color: '#f97316' }}>📋</div>
+                    <div className="adm-feed-icon adm-feed-icon--warn">📋</div>
                     <div className="adm-feed-info">
                       <div><strong>{l.employee?.full_name}</strong> filed a <strong>{l.leave_type}</strong> leave ({l.days_count} days)</div>
                       <div className="adm-feed-date">{new Date(l.created_at).toLocaleDateString()}</div>
@@ -673,7 +701,7 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
               <div style={{ padding: '8px 16px 16px' }}>
                 {pendingPayrolls.map(p => (
                   <div key={p.id} className="adm-feed-item">
-                    <div className="adm-feed-icon" style={{ background: '#ecfdf5', color: '#10b981' }}>💵</div>
+                    <div className="adm-feed-icon adm-feed-icon--ok">💵</div>
                     <div className="adm-feed-info">
                       <div>Payroll period <strong>{p.period_name}</strong> is awaiting your approval.</div>
                       <div className="adm-feed-date">{p.start_date} – {p.end_date}</div>
@@ -846,7 +874,22 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
               <div className="form-row fr-2" style={{ marginBottom: 20 }}>
                 <div className="form-grp"><label className="form-lbl">Grace Period (minutes)</label><input type="number" className="form-ctrl" min="0" max="60" value={settingsForm.grace_period_minutes || '10'} onChange={e => setSettingsForm(p => ({ ...p, grace_period_minutes: e.target.value }))} /></div>
                 <div className="form-grp"><label className="form-lbl">OT Multiplier</label><input type="number" step="0.05" min="1" max="3" className="form-ctrl" value={settingsForm.ot_multiplier || '1.25'} onChange={e => setSettingsForm(p => ({ ...p, ot_multiplier: e.target.value }))} /></div>
+                <div className="form-grp"><label className="form-lbl">Lunch break (minutes)</label><input type="number" min="0" max="180" className="form-ctrl" value={settingsForm.lunch_break_minutes || '60'} onChange={e => setSettingsForm(p => ({ ...p, lunch_break_minutes: e.target.value }))} /></div>
+                <div className="form-grp"><label className="form-lbl">Paid work days / month (for daily rate)</label><input type="number" min="1" max="31" className="form-ctrl" value={settingsForm.payroll_work_days_per_month || '22'} onChange={e => setSettingsForm(p => ({ ...p, payroll_work_days_per_month: e.target.value }))} /></div>
+                <div className="form-grp" style={{ gridColumn: '1 / -1' }}>
+                  <label className="form-lbl" style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontWeight: 500 }}>
+                    <input
+                      type="checkbox"
+                      checked={parseOtCountEarlySetting(settingsForm.payroll_ot_count_early)}
+                      onChange={e => setSettingsForm(p => ({ ...p, payroll_ot_count_early: e.target.checked ? '1' : '0' }))}
+                    />
+                    OT from excess daily net hours vs regular (default). Off = OT only after scheduled end, limited to that day’s net surplus (no OT without extra worked hours).
+                  </label>
+                </div>
               </div>
+              <p style={{ margin: '0 0 16px', fontSize: '.78rem', color: 'var(--ink3)' }}>
+                Payroll uses time in/out with grace on late arrival. Undertime deducts at straight hourly rate for net hours below the regular allowance. OT matches excess net hours (default), or minutes after end time capped by that excess if unchecked. Leave follows SIL then balances.
+              </p>
               <button className="btn btn-primary" disabled={saving} onClick={handleSaveSettings}>
                 {saving ? 'Saving…' : '💾 Save Settings'}
               </button>
@@ -982,7 +1025,57 @@ export function AdminDashboard({ activeSection, onNavigate }: AdminProps) {
               <div className="form-grp"><label className="form-lbl">Last Name *</label><input className="form-ctrl" value={newUser.last_name} onChange={e => setNewUser(p => ({ ...p, last_name: e.target.value }))} placeholder="Last name" /></div>
             </div>
             <div className="form-grp"><label className="form-lbl">Email *</label><input className="form-ctrl" type="email" value={newUser.email} onChange={e => setNewUser(p => ({ ...p, email: e.target.value }))} placeholder="email@company.com" /></div>
-            <div className="form-grp"><label className="form-lbl">Temporary Password *</label><input className="form-ctrl" type="password" value={newUser.password} onChange={e => setNewUser(p => ({ ...p, password: e.target.value }))} placeholder="Min. 8 chars, 1 uppercase, 1 number" /></div>
+            <div className="form-grp">
+              <label className="form-lbl">Temporary Password *</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
+                <input
+                  className="form-ctrl"
+                  type="password"
+                  autoComplete="new-password"
+                  value={newUser.password}
+                  onChange={e => setNewUser(p => ({ ...p, password: e.target.value }))}
+                  placeholder="12+ chars, mixed case, number, symbol"
+                  style={{ flex: '1 1 200px', minWidth: 0 }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    const pw = generateSecureTemporaryPassword()
+                    setNewUser(p => ({ ...p, password: pw }))
+                    showToast('Strong password generated. Share it through a secure channel.', 'success')
+                  }}
+                >
+                  Generate secure
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={!newUser.password}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(newUser.password)
+                      showToast('Password copied', 'success')
+                    } catch {
+                      showToast('Clipboard not available', 'warn')
+                    }
+                  }}
+                >
+                  Copy
+                </button>
+              </div>
+              <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: '.68rem', lineHeight: 1.5, color: 'var(--ink3)', listStyle: 'none' }}>
+                {getTemporaryPasswordChecks(newUser.password).map(c => (
+                  <li key={c.label} style={{ color: c.ok ? 'var(--ok)' : 'var(--ink3)' }}>
+                    <span style={{ marginRight: 6 }}>{c.ok ? '✓' : '○'}</span>
+                    {c.label}
+                  </li>
+                ))}
+              </ul>
+              <div style={{ fontSize: '.62rem', color: 'var(--ink3)', marginTop: 6 }}>
+                User should change this after first sign-in. Temporary passwords must not contain spaces.
+              </div>
+            </div>
             <div className="form-row fr-2">
               <div className="form-grp"><label className="form-lbl">Department *</label>
                 <select className="form-ctrl" value={newUser.department} onChange={e => setNewUser(p => ({ ...p, department: e.target.value }))}>
